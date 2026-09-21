@@ -765,9 +765,8 @@ class CypherBuilder:
             # the answer model as bare identifiers and every such question ended in "no data" —
             # declaring a new node type in the ontology made answers *worse*. Return one aggregated
             # row (the shape the generic branch below already uses) with the neighbours' properties,
-            # and, when the named relationship has no neighbours on this node, fall back to the
-            # generic one-hop summary in the same query so an answerable neighbour (a VVB behind
-            # VALIDATED_BY) is not lost just because the planner named a different edge.
+            # and add the remaining one-hop neighbours in the same query so an answerable neighbour
+            # (a VVB behind VALIDATED_BY) is not lost just because the planner named a different edge.
             rel_ref = quote_identifier(relationship_type)
             display_m = self._display_expr("m", target_label)
             hit = ("{relation: type(r), neighbor: " + display_m + ", target: " + display_m + ", "
@@ -781,9 +780,13 @@ class CypherBuilder:
                 f"  AND {active_graph_predicate('n')}\n"
                 f"OPTIONAL MATCH (n)-[r:{rel_ref}]-{arrow}(m{tgt_clause})\n"
                 f"WHERE {active_graph_predicate('m')}\n"
-                f"WITH n, [x IN collect(DISTINCT CASE WHEN m IS NULL THEN null ELSE {hit} END) WHERE x IS NOT NULL][0..$limit] AS hits\n"
+                f"WITH n, [x IN collect(DISTINCT CASE WHEN m IS NULL THEN null ELSE {hit} END) WHERE x IS NOT NULL][0..$limit] AS hits,\n"
+                "     [x IN collect(DISTINCT elementId(m)) WHERE x IS NOT NULL] AS hit_ids\n"
+                # Always add the other one-hop neighbours (minus the ones already in `hits`): a question that names
+                # one edge usually also needs a neighbour behind another (the VVB behind VALIDATED_BY next to the
+                # verification events behind HAS_VERIFICATION). Same cap as `hits`, so the row stays bounded.
                 "OPTIONAL MATCH (n)-[r2]-(m2)\n"
-                "WHERE size(hits) = 0\n"
+                "WHERE NOT elementId(m2) IN hit_ids\n"
                 "  AND ($workspace_id = '' OR coalesce(m2._workspace_id, '') = $workspace_id)\n"
                 f"  AND {active_graph_predicate('m2')}\n"
                 f"WITH n, hits, [x IN collect(DISTINCT CASE WHEN m2 IS NULL THEN null ELSE {other} END) WHERE x IS NOT NULL][0..$limit] AS others\n"

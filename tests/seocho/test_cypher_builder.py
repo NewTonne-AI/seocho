@@ -744,3 +744,24 @@ def test_financial_delta_answer_humanizes_large_currency_values() -> None:
     assert "$87.1 billion" in answer
     assert "$66.7 billion" in answer
     assert "$20.4 billion" in answer
+
+
+def test_supporting_fact_answer_defers_to_llm_when_neighbours_are_present() -> None:
+    # NT-543: a description sentence is not an answer to a question about the neighbours.
+    synthesizer = QueryAnswerSynthesizer(query_strategy=object(), llm=object())
+    record = {
+        "entity": "Cookstove Distribution Program",
+        "properties": {"description": "The project distributes improved cookstoves in rural India."},
+        "relation_type": "HAS_VERIFICATION",
+        "neighbors": [{"relation": "HAS_VERIFICATION", "neighbor": "verificationevent|gs12570|mp1",
+                       "neighbor_labels": ["VerificationEvent"],
+                       "neighbor_properties": {"audit_dates": "2024-09-21~24", "opinion": "Positive"}}],
+        "other_neighbors": [],
+        "supporting_fact": "The project distributes improved cookstoves in rural India.",
+    }
+    assert synthesizer.build_deterministic_answer("Who verified it and when?", [record], {"intent": "neighbors"}) is None
+
+    description_only = {"entity": "Cookstove Distribution Program", "properties": record["properties"],
+                        "supporting_fact": record["supporting_fact"]}
+    answer = synthesizer.build_deterministic_answer("Describe the project", [description_only], {"intent": "entity_lookup"})
+    assert answer and "cookstoves" in answer

@@ -377,6 +377,14 @@ class QueryAnswerSynthesizer:
         question: str,
         records: Sequence[Dict[str, Any]],
     ) -> Optional[str]:
+        # NT-543 (2026-09-21): when retrieval carries structured neighbours, a sentence lifted from the
+        # anchor's free-text description is not an answer to a question about those neighbours — on the
+        # carbon pilot it returned English project blurbs to Korean questions about verification bodies
+        # and every `neighbors` case was judged wrong. Leave those rows to the model, which receives the
+        # full records; keep the direct answer for description-only rows (plain entity lookups).
+        if any(isinstance(record, dict) and (record.get("neighbors") or record.get("other_neighbors"))
+               for record in records):
+            return None
         supporting_fact = self._supporting_fact(records)
         direct_answer = self._direct_answer(question, supporting_fact)
         return direct_answer or None

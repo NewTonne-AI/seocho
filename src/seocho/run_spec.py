@@ -28,14 +28,16 @@ from .spec_loader import (
     suggest as _suggest,  # noqa: F401  (kept for callers/tests referencing the old seam)
 )
 
-DEFAULT_MODEL = "mara/MiniMax-M2.5"
+DEFAULT_MODEL = "mara/MiniMax-M2.7"
 
 _ALLOWED_ENFORCEMENT_MODES = {"strict", "guided", "open"}
 _ALLOWED_EXECUTION_MODES = {"pipeline", "agent", "supervisor"}
+_ALLOWED_AGENT_RUNTIMES = {"direct", "agents_sdk"}
 _ALLOWED_ROUTING_POLICIES = {"fast", "balanced", "thorough"}
 _ALLOWED_ANSWER_STYLES = {"concise", "evidence", "table"}
-_ALLOWED_GRAPH_KINDS = {"neo4j", "dozerdb", "ladybug"}
+_ALLOWED_GRAPH_KINDS = {"neo4j", "dozerdb"}
 _ALLOWED_VECTOR_KINDS = {"faiss", "lancedb"}
+_ALLOWED_GOVERNANCE_MODES = {"direct", "shadow", "governed", "lockdown"}
 _BOLT_SCHEMES = ("bolt://", "neo4j://", "neo4j+s://", "bolt+s://")
 
 _TOP_LEVEL_KEYS = {
@@ -54,6 +56,7 @@ _TOP_LEVEL_KEYS = {
     "agent",
     "query",
     "vector",
+    "governance",
     "questions",
     "output",
 }
@@ -63,9 +66,10 @@ _SECTION_KEYS: Dict[str, set] = {
     "models": {"default", "indexing", "query"},
     "graph": {"kind", "uri", "path", "user", "password", "database"},
     "indexing": {"design", "category", "force"},
-    "agent": {"design", "execution_mode", "routing_policy"},
+    "agent": {"design", "execution_mode", "routing_policy", "runtime", "ontology_bundle_dir", "max_turns"},
     "query": {"reasoning_mode", "repair_budget", "answer_style", "limit"},
     "vector": {"kind", "embedding", "embedding_model", "dimension", "uri", "table_name"},
+    "governance": {"mode", "bundle_dir", "state_db", "lease_id", "artifact_dir"},
     "output": {"dir"},
 }
 
@@ -104,7 +108,7 @@ def parse_model_ref(value: str, *, where: str, errors: List[str]) -> Tuple[str, 
     text = _string(value)
     if "/" not in text:
         errors.append(
-            f"at {where}: model must be 'provider/model' (e.g. 'mara/MiniMax-M2.5'), got {text!r}."
+            f"at {where}: model must be 'provider/model' (e.g. 'mara/MiniMax-M2.7'), got {text!r}."
         )
         return ("", text)
     provider, model = text.split("/", 1)
@@ -139,9 +143,8 @@ class RunSpec:
     documents_recursive: bool = True
     models: Dict[str, str] = field(default_factory=dict)
     graph: str = ""
-    # Optional explicit backend kind (neo4j | dozerdb | ladybug). Empty means
-    # infer from the graph value: bolt-scheme URI → Neo4j/DozerDB, anything
-    # else (or blank) → embedded LadybugDB path.
+    # Optional explicit backend kind (neo4j | dozerdb). Empty infers Neo4j
+    # from the required Bolt URI.
     graph_kind: str = ""
     graph_user: str = "neo4j"
     graph_password: str = "password"
@@ -153,6 +156,10 @@ class RunSpec:
     # Optional hybrid-search vector store: {kind, embedding, embedding_model,
     # dimension, uri, table_name}. Absent section → no vector store.
     vector: Dict[str, Any] = field(default_factory=dict)
+    # This is distinct from extraction enforcement: strict extraction alone
+    # does not make a graph write canonically governed.
+    governance_mode: str = "direct"
+    governance: Dict[str, Any] = field(default_factory=dict)
     questions: List[QuestionSpec] = field(default_factory=list)
     output_dir: str = "runs"
     source_path: str = ""
@@ -212,7 +219,7 @@ class RunSpec:
             return self.graph_kind
         if self.graph and self.graph.startswith(_BOLT_SCHEMES):
             return "neo4j"
-        return "ladybug"
+        return "neo4j"
 
     def uses_vector_store(self) -> bool:
         return bool(self.vector)
@@ -331,9 +338,10 @@ def parse_run_spec(payload: Any, *, source_path: str = "") -> RunSpec:
     agent = _section(payload, "agent", errors=errors)
     query = _section(payload, "query", errors=errors)
     vector = _section(payload, "vector", errors=errors)
+    governance = _section(payload, "governance", errors=errors)
     output = _section(payload, "output", errors=errors)
 
-    # ``graph`` accepts a bare string (bolt URI or ladybug path — inferred)
+    # ``graph`` accepts a bare Bolt URI
     # or a mapping with an explicit backend kind. The mapping form
     # normalizes into the flat fields so everything downstream is unchanged.
     graph_value = payload.get("graph")
@@ -346,7 +354,7 @@ def parse_run_spec(payload: Any, *, source_path: str = "") -> RunSpec:
         graph_password = _string(graph_section.get("password"))
         graph_database = _string(graph_section.get("database"))
         if _string(graph_section.get("uri")) and _string(graph_section.get("path")):
-            errors.append("at graph: declare either 'uri' (bolt) or 'path' (ladybug), not both.")
+            errors.append("at graph: declare only 'uri' for a Bolt-compatible graph.")
     else:
         graph_target = _string(graph_value)
         graph_user = ""
@@ -373,6 +381,8 @@ def parse_run_spec(payload: Any, *, source_path: str = "") -> RunSpec:
         agent=agent,
         query=query,
         vector=vector,
+        governance_mode=_string(governance.get("mode")).lower() or "direct",
+        governance=governance,
         questions=_parse_questions(payload.get("questions"), errors=errors),
         output_dir=_string(output.get("dir")) or "runs",
         source_path=source_path,
@@ -395,6 +405,11 @@ def parse_run_spec(payload: Any, *, source_path: str = "") -> RunSpec:
             "at ontology.enforcement: must be one of: "
             f"{', '.join(sorted(_ALLOWED_ENFORCEMENT_MODES))}; got {spec.enforcement!r}."
         )
+    if spec.governance_mode not in _ALLOWED_GOVERNANCE_MODES:
+        errors.append(
+            "at governance.mode: must be one of: "
+            f"{', '.join(sorted(_ALLOWED_GOVERNANCE_MODES))}; got {spec.governance_mode!r}."
+        )
 
     for key in ("default", "indexing", "query"):
         if _string(spec.models.get(key)):
@@ -412,6 +427,17 @@ def parse_run_spec(payload: Any, *, source_path: str = "") -> RunSpec:
             "at agent.routing_policy: must be one of: "
             f"{', '.join(sorted(_ALLOWED_ROUTING_POLICIES))}; got {routing_policy!r}."
         )
+    agent_runtime = _string(spec.agent.get("runtime")).lower()
+    if agent_runtime and agent_runtime not in _ALLOWED_AGENT_RUNTIMES:
+        errors.append(
+            "at agent.runtime: must be one of: "
+            f"{', '.join(sorted(_ALLOWED_AGENT_RUNTIMES))}; got {agent_runtime!r}."
+        )
+    if agent_runtime == "agents_sdk" and not _string(spec.agent.get("ontology_bundle_dir")):
+        errors.append("at agent.ontology_bundle_dir: required when agent.runtime is 'agents_sdk'.")
+    max_turns = spec.agent.get("max_turns")
+    if max_turns is not None and (not isinstance(max_turns, int) or max_turns < 1):
+        errors.append("at agent.max_turns: must be a positive integer.")
     answer_style = _string(spec.query.get("answer_style")).lower()
     if answer_style and answer_style not in _ALLOWED_ANSWER_STYLES:
         errors.append(
@@ -438,11 +464,8 @@ def parse_run_spec(payload: Any, *, source_path: str = "") -> RunSpec:
                     f"at graph: kind {spec.graph_kind!r} requires a bolt:// (or neo4j://) "
                     f"uri; got {spec.graph!r}."
                 )
-            if spec.graph_kind == "ladybug" and is_bolt:
-                errors.append(
-                    "at graph: kind 'ladybug' is the embedded engine and takes a file "
-                    f"path, not a bolt uri; got {spec.graph!r}."
-                )
+    elif not spec.graph.startswith(_BOLT_SCHEMES):
+        errors.append("at graph: a DozerDB/Neo4j bolt:// (or neo4j://) URI is required.")
 
     if spec.vector:
         vector_kind = spec.vector_kind()
@@ -484,6 +507,7 @@ RUN_SPEC_TEMPLATE = """\
 # Minimal config: an ontology, a documents folder, and your questions.
 ontology: ./schema.yaml
 documents: ./docs/
+graph: ${NEO4J_URI:-bolt://localhost:7687}
 questions:
   - Which companies reported revenue growth?
   - Who is the CEO of Acme?
@@ -507,15 +531,15 @@ questions:
 #   indexing: mara/MiniMax-M2       # per-phase override
 #   query: mara/MiniMax-M2.5
 #
-# graph: bolt://localhost:7687      # omit for embedded LadybugDB (no server)
+# graph: bolt://localhost:7687      # required DozerDB/Neo4j graph endpoint
 # graph_user: neo4j
 # graph_password: ${NEO4J_PASSWORD:-password}
 # database: neo4j                   # omit to derive from the ontology name
 # workspace_id: my_run
 #
 # graph:                            # mapping form with an explicit backend
-#   kind: dozerdb                   # neo4j | dozerdb | ladybug
-#   uri: bolt://localhost:7687      # (ladybug uses `path:` instead)
+#   kind: dozerdb                   # neo4j | dozerdb
+#   uri: bolt://localhost:7687
 #   user: neo4j
 #   password: ${NEO4J_PASSWORD}
 #   database: mydb
@@ -535,6 +559,9 @@ questions:
 #
 # agent:
 #   design: ./agent_design.yaml     # optional AgentDesignSpec
+#   runtime: direct                 # direct | agents_sdk
+#   ontology_bundle_dir: ./bundle   # required by agents_sdk JIT ontology tools
+#   max_turns: 6                    # positive integer, agents_sdk only
 #   execution_mode: pipeline        # pipeline | agent | supervisor
 #   routing_policy: balanced        # fast | balanced | thorough
 #
@@ -549,6 +576,11 @@ questions:
 #
 # output:
 #   dir: runs                       # report lands in runs/<name>-<timestamp>/
+#
+# governance:
+#   mode: direct                    # direct | shadow | governed | lockdown
+#                                   # strict modes require Rust projection,
+#                                   # lifecycle admission, and a RDF receipt
 """
 
 

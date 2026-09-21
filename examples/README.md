@@ -11,6 +11,7 @@ tracked repository until they are promoted into one of the current paths below.
 |------|------------|
 | [`run/`](run/) | Config-driven `seocho run` and `seocho sweep` examples. Start here for a CLI-first end-to-end flow. |
 | [`connectors/`](connectors/) | Starting point for external-source materialization, custom connector records, and recommended next connectors. |
+| [`datahub/`](datahub/) | Round-trip a SEOCHO ontology through a DataHub Business Glossary for non-developer review, then absorb the approved edits. Runs offline; live emit needs Docker. |
 | [`finance-compliance/`](finance-compliance/) | A compact domain example with ontology code, sample documents, and a runnable quickstart. |
 | [`quickstart.ipynb`](quickstart.ipynb) | The notebook "run everything once" tour: ontology, indexing/agent design YAML, provider comparison, observability. |
 | [`bring_your_data.ipynb`](bring_your_data.ipynb) | Plug in your own text files, CSV, or JSON. |
@@ -128,7 +129,7 @@ echo 'OPENAI_API_KEY=sk-...' >> ../.env
 
 # 2. Bring up JupyterLab
 make tutorials-up
-# or: docker compose -f docker-compose.tutorials.yml up -d --build
+# or: docker compose --project-directory . -f docker/compose.tutorials.yaml up -d --build
 
 # 3. Open JupyterLab (token disabled in this dev image)
 open http://localhost:28888/lab/tree/examples

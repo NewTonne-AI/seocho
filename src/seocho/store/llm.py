@@ -108,7 +108,7 @@ _PROVIDER_SPECS: Dict[str, ProviderSpec] = {
         name="mara",
         api_key_env="MARA_API_KEY",
         base_url="https://api.cloud.mara.com/v1",
-        default_model="MiniMax-M2.5",
+        default_model="MiniMax-M2.7",
         default_embedding_model=None,
         supports_embeddings=False,
         # MiniMax-M2.x is a reasoning model and mara is the default provider
@@ -630,7 +630,11 @@ class OpenAICompatibleBackend(LLMBackend):
             )
         kwargs.update(reasoning_overrides)
         if provider_options:
-            allowed = {"prompt_cache_key", "cache_salt", "thinking"}
+            # structured_outputs carries a decode-time constraint (vLLM >= 0.27 takes an
+            # EBNF as {"grammar": ...}); it rides extra_body like the cache options do.
+            # Callers that set it must not also set response_format — the two are mutually
+            # exclusive ways of constraining the same output and vLLM refuses both at once.
+            allowed = {"prompt_cache_key", "cache_salt", "thinking", "structured_outputs"}
             unknown = sorted(set(provider_options) - allowed)
             if unknown:
                 raise ValueError(
@@ -1313,7 +1317,7 @@ class MaraBackend(OpenAICompatibleBackend):
     def __init__(
         self,
         *,
-        model: str = "MiniMax-M2.5",
+        model: str = "MiniMax-M2.7",
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         timeout: float = 120.0,

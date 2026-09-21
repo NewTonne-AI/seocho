@@ -60,15 +60,27 @@ def register(subparsers) -> None:
     ontology_inspect_parser.add_argument("--source", required=True, help="OWL file path or URI")
     ontology_inspect_parser.add_argument("--json", dest="output_json", action="store_true", help="JSON output")
 
+    ontology_rdf_governance_parser = ontology_subparsers.add_parser(
+        "rdf-governance", help="Run hash-pinned offline SHACL and optional OWL consistency checks",
+    )
+    ontology_rdf_governance_parser.add_argument("--bundle", required=True, help="RDF ontology bundle directory")
+    ontology_rdf_governance_parser.add_argument("--data", required=True, help="RDF instance data graph")
+    ontology_rdf_governance_parser.add_argument("--data-format", default="turtle", help="RDF data format for pySHACL")
+    ontology_rdf_governance_parser.add_argument("--run-reasoner", action="store_true", help="Run optional offline Owlready2/Pellet consistency check")
+    ontology_rdf_governance_parser.add_argument("--output", default=None, help="Optional receipt JSON path")
+    ontology_rdf_governance_parser.add_argument("--json", dest="output_json", action="store_true", help="JSON output")
+
     ontology_review_parser = ontology_subparsers.add_parser(
         "review",
         help="Ambiguity review loop: quarantine OOV entities, cluster them, and map them back into the taxonomy",
     )
     ontology_review_parser.add_argument(
         "review_action",
-        choices=["ingest", "clusters", "export-spec", "apply"],
+        choices=["ingest", "clusters", "export-spec", "review-sheet", "apply"],
         help="ingest: detect+quarantine from an extracted-graph JSON; clusters: list ranked quarantine; "
-             "export-spec: write a starter mapping-spec YAML; apply: apply a mapping-spec to an ontology",
+             "export-spec: write a starter mapping-spec YAML; review-sheet: write a non-developer, "
+             "Docker-free YAML review sheet (edit status→APPROVED, then datahub-apply --terms); "
+             "apply: apply a mapping-spec to an ontology",
     )
     ontology_review_parser.add_argument("--quarantine", default=".seocho_quarantine.jsonl", help="Quarantine JSONL path")
     ontology_review_parser.add_argument("--schema", default=None, help="Ontology file (for ingest/export-spec/apply)")
@@ -108,10 +120,27 @@ def register(subparsers) -> None:
         help="Round-trip approved DataHub glossary terms back into the ontology (close the review loop)",
     )
     ontology_dhapply_parser.add_argument("--schema", required=True, help="Ontology file (JSON-LD, YAML, or TTL)")
-    ontology_dhapply_parser.add_argument("--terms", required=True, help="Reviewed glossary terms JSON (list of records)")
+    ontology_dhapply_parser.add_argument(
+        "--terms", default=None,
+        help="Reviewed glossary terms JSON (list of records). Omit when using --gms to pull live.")
+    ontology_dhapply_parser.add_argument(
+        "--gms", default=None,
+        help="DataHub GMS URL to pull reviewed glossary terms from live (instead of --terms)")
     ontology_dhapply_parser.add_argument("--status", default="APPROVED", help="Only apply terms with this review status")
     ontology_dhapply_parser.add_argument("--output", default=None, help="Write the new ontology JSON-LD here")
     ontology_dhapply_parser.add_argument("--json", dest="output_json", action="store_true", help="JSON output")
+
+    ontology_dhqueue_parser = ontology_subparsers.add_parser(
+        "datahub-queue",
+        help="Surface the ambiguity review queue in DataHub as PROPOSED glossary terms for non-developer review",
+    )
+    ontology_dhqueue_parser.add_argument("--schema", required=True, help="Ontology file (for the package id)")
+    ontology_dhqueue_parser.add_argument("--quarantine", default=".seocho_quarantine.jsonl", help="Quarantine JSONL path")
+    ontology_dhqueue_parser.add_argument("--gms", default=None, help="DataHub GMS server URL (for live emit)")
+    ontology_dhqueue_parser.add_argument("--token", default=None, help="DataHub access token (for live emit)")
+    ontology_dhqueue_parser.add_argument("--emit", action="store_true", help="Actually emit to --gms (default: dry-run)")
+    ontology_dhqueue_parser.add_argument("--output", default=None, help="Write MCP JSON to this path (dry-run)")
+    ontology_dhqueue_parser.add_argument("--json", dest="output_json", action="store_true", help="JSON output")
 
     ontology_eval_answers_parser = ontology_subparsers.add_parser(
         "eval-answers",
@@ -126,6 +155,15 @@ def register(subparsers) -> None:
     ontology_eval_answers_parser.add_argument("--model", default=None, help="Model override (default: provider default)")
     ontology_eval_answers_parser.add_argument("--workers", type=int, default=6, help="Concurrent workers (default: 6)")
     ontology_eval_answers_parser.add_argument("--json", dest="output_json", action="store_true", help="JSON output")
+
+    ontology_learn_parser = ontology_subparsers.add_parser(
+        "learn", help="Create a review-only LLMs4OL candidate report from an extracted graph",
+    )
+    ontology_learn_parser.add_argument("--schema", required=True, help="Existing ontology file; never modified")
+    ontology_learn_parser.add_argument("--graph", required=True, help="Extracted graph JSON input")
+    ontology_learn_parser.add_argument("--output", required=True, help="Explicit review-report JSON output path")
+    ontology_learn_parser.add_argument("--min-support", type=int, default=2, help="Minimum observed support per candidate")
+    ontology_learn_parser.add_argument("--json", dest="output_json", action="store_true", help="JSON output")
 
 
     ontology_import_parser = ontology_subparsers.add_parser(
@@ -156,6 +194,78 @@ def register(subparsers) -> None:
     ontology_clone_parser.add_argument(
         "--json", dest="output_json", action="store_true", help="JSON output")
 
+    # Lifecycle commands deliberately use explicit state/root arguments.  They
+    # never infer a host path from an agent prompt or a bundle manifest.
+    bundle_parser = ontology_subparsers.add_parser("bundle", help="Build or verify immutable RDF ontology bundles")
+    bundle_sub = bundle_parser.add_subparsers(dest="bundle_action", required=True)
+    bundle_build = bundle_sub.add_parser("build", help="Atomically publish a new immutable bundle")
+    bundle_build.add_argument("--schema", required=True)
+    bundle_build.add_argument("--output", required=True, help="New (nonexistent) bundle directory")
+    bundle_build.add_argument("--json", dest="output_json", action="store_true")
+    bundle_verify = bundle_sub.add_parser("verify", help="Verify manifest and artifact hashes")
+    bundle_verify.add_argument("--bundle", required=True)
+    bundle_verify.add_argument("--json", dest="output_json", action="store_true")
+
+    def lifecycle_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--state-db", default=".seocho/ontology/state.sqlite", help="Single-host SQLite/WAL state database")
+        parser.add_argument("--workspace", required=True)
+        parser.add_argument("--package", required=True)
+        parser.add_argument("--json", dest="output_json", action="store_true")
+
+    activate = ontology_subparsers.add_parser("activate", help="CAS-activate a verified immutable bundle")
+    lifecycle_args(activate)
+    activate.add_argument("--bundle", required=True)
+    activate.add_argument("--fencing-token", required=True, type=int)
+    activate.add_argument("--expected", default=None, help="Required current generation:epoch for a swap")
+
+    status = ontology_subparsers.add_parser("status", help="Show active ontology and live writer leases")
+    lifecycle_args(status)
+
+    lease = ontology_subparsers.add_parser("lease", help="Acquire, renew, or release a persistent writer lease")
+    lease_sub = lease.add_subparsers(dest="lease_action", required=True)
+    for action in ("acquire", "renew", "release"):
+        lp = lease_sub.add_parser(action)
+        lp.add_argument("--state-db", default=".seocho/ontology/state.sqlite")
+        lp.add_argument("--owner", required=True, help="Stable process identity, never a model-generated value")
+        lp.add_argument("--json", dest="output_json", action="store_true")
+        if action == "acquire":
+            lp.add_argument("--workspace", required=True); lp.add_argument("--package", required=True)
+            lp.add_argument("--purpose", required=True); lp.add_argument("--ttl", type=int, default=60)
+        else:
+            lp.add_argument("--lease-id", required=True)
+            if action == "renew": lp.add_argument("--ttl", type=int, default=60)
+
+    # ``lock`` is a compatibility spelling for lease, not an unsafe second
+    # locking implementation.  It keeps operator intent obvious in scripts.
+    lock = ontology_subparsers.add_parser("lock", help="Alias of persistent writer lease commands")
+    lock_sub = lock.add_subparsers(dest="lease_action", required=True)
+    for action in ("acquire", "renew", "release"):
+        lp = lock_sub.add_parser(action)
+        lp.add_argument("--state-db", default=".seocho/ontology/state.sqlite")
+        lp.add_argument("--owner", required=True); lp.add_argument("--json", dest="output_json", action="store_true")
+        if action == "acquire":
+            lp.add_argument("--workspace", required=True); lp.add_argument("--package", required=True)
+            lp.add_argument("--purpose", required=True); lp.add_argument("--ttl", type=int, default=60)
+        else:
+            lp.add_argument("--lease-id", required=True)
+            if action == "renew": lp.add_argument("--ttl", type=int, default=60)
+
+    gc = ontology_subparsers.add_parser("gc", help="Report candidate immutable bundles; dry-run only")
+    gc.add_argument("--root", required=True, help="Directory containing immutable bundle directories")
+    gc.add_argument("--dry-run", action="store_true", required=True, help="Required: no deletion is implemented")
+    gc.add_argument("--json", dest="output_json", action="store_true")
+
+    context_parser = ontology_subparsers.add_parser("context", help="Return verified, bounded ontology context for an agent")
+    context_sub = context_parser.add_subparsers(dest="context_action", required=True)
+    profile_parser = context_sub.add_parser("profile", help="Return one purpose-scoped immutable profile")
+    profile_parser.add_argument("--bundle", required=True); profile_parser.add_argument("--purpose", required=True, choices=["indexing", "query", "projection"])
+    profile_parser.add_argument("--json", dest="output_json", action="store_true")
+    slice_parser = context_sub.add_parser("slice", help="Return a bounded JIT slice; never raw ontology files")
+    slice_parser.add_argument("--bundle", required=True); slice_parser.add_argument("--purpose", required=True, choices=["indexing", "query", "projection"])
+    slice_parser.add_argument("--terms", required=True, help="Comma-separated retrieval terms")
+    slice_parser.add_argument("--max-chars", type=int, default=4000)
+    slice_parser.add_argument("--json", dest="output_json", action="store_true")
+
 
 def handle(args: argparse.Namespace) -> int:
     from ..ontology_governance import (
@@ -167,6 +277,63 @@ def handle(args: argparse.Namespace) -> int:
         load_ontology_file,
     )
     import yaml
+
+    if args.ontology_command == "bundle":
+        from ..ontology import Ontology
+        from ..ontology.lifecycle import build_bundle_atomically, verify_rdf_bundle
+        if args.bundle_action == "build":
+            result = build_bundle_atomically(Ontology.load(args.schema), args.output)
+        else:
+            result = verify_rdf_bundle(args.bundle)
+        print(json.dumps(result, indent=2, ensure_ascii=False) if getattr(args, "output_json", False) else result)
+        return 0 if result.get("ok", result.get("verified", False)) else 1
+
+    if args.ontology_command in {"activate", "status"}:
+        from ..ontology.lifecycle import OntologyLifecycleStore
+        store = OntologyLifecycleStore(args.state_db)
+        if args.ontology_command == "activate":
+            expected = None
+            if args.expected:
+                try:
+                    generation, epoch = args.expected.split(":", 1); expected = (int(generation), int(epoch))
+                except ValueError as exc:
+                    raise SeochoError("--expected must be generation:epoch") from exc
+            ok, active = store.activate(args.workspace, args.package, args.bundle, fencing_token=args.fencing_token, expected=expected)
+            result = {"ok": ok, "active": active.__dict__ if active else None}
+            code = 0 if ok else 1
+        else:
+            result = store.status(args.workspace, args.package); code = 0
+        print(json.dumps(result, indent=2, ensure_ascii=False) if getattr(args, "output_json", False) else result)
+        return code
+
+    if args.ontology_command in {"lease", "lock"}:
+        from ..ontology.lifecycle import OntologyLifecycleStore
+        store = OntologyLifecycleStore(args.state_db)
+        if args.lease_action == "acquire":
+            result = store.acquire(args.workspace, args.package, purpose=args.purpose, owner=args.owner, ttl_seconds=args.ttl).to_dict()
+        elif args.lease_action == "renew":
+            result = store.renew(args.lease_id, owner=args.owner, ttl_seconds=args.ttl).to_dict()
+        else:
+            result = {"released": store.release(args.lease_id, owner=args.owner)}
+        print(json.dumps(result, indent=2, ensure_ascii=False) if getattr(args, "output_json", False) else result)
+        return 0
+
+    if args.ontology_command == "gc":
+        from ..ontology.lifecycle import verify_rdf_bundle
+        root = Path(args.root)
+        candidates = [str(path) for path in sorted(root.iterdir()) if path.is_dir() and (path / "manifest.json").exists() and verify_rdf_bundle(path).get("ok")]
+        result = {"dry_run": True, "deletions": [], "candidate_bundles": candidates, "note": "GC is report-only; immutable bundles are never deleted by this command."}
+        print(json.dumps(result, indent=2, ensure_ascii=False) if getattr(args, "output_json", False) else result)
+        return 0
+
+    if args.ontology_command == "context":
+        from ..ontology.lifecycle import load_agent_profile, slice_agent_profile
+        if args.context_action == "profile":
+            result = load_agent_profile(args.bundle, args.purpose)
+        else:
+            result = slice_agent_profile(args.bundle, args.purpose, args.terms.split(","), max_chars=args.max_chars)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
 
     if args.ontology_command == "check":
         ontology = load_ontology_file(args.schema)
@@ -282,6 +449,24 @@ def handle(args: argparse.Namespace) -> int:
             )
         return 0 if inspection.available and inspection.error is None else 1
 
+    if args.ontology_command == "rdf-governance":
+        from ..ontology.rdf_governance import run_rdf_governance, write_rdf_governance_receipt
+
+        receipt = run_rdf_governance(
+            args.bundle, args.data, data_format=args.data_format,
+            run_reasoner=args.run_reasoner,
+        )
+        if args.output:
+            write_rdf_governance_receipt(receipt, args.output)
+        if getattr(args, "output_json", False):
+            print(json.dumps(receipt.to_dict(), indent=2, ensure_ascii=False))
+        else:
+            print(f"rdf governance: {'promotable' if receipt.promotable else 'not promotable'}")
+            print(f"  bundle_sha256={receipt.bundle_sha256}")
+            if args.output:
+                print(f"written: {args.output}")
+        return 0 if receipt.promotable else 1
+
     if args.ontology_command == "review":
         from ..ontology import Ontology
         from ..ontology_ambiguity import (
@@ -289,6 +474,7 @@ def handle(args: argparse.Namespace) -> int:
             apply_mapping_spec,
             detect_ambiguities,
             load_mapping_spec,
+            render_review_sheet,
             starter_mapping_spec,
         )
 
@@ -318,6 +504,19 @@ def handle(args: argparse.Namespace) -> int:
                 for c in clusters:
                     print(f"  {c['frequency']:4d}×  {c['surface']:30s} signals={c['signals']} "
                           f"candidates={c['candidate_labels']}")
+            return 0
+
+        if args.review_action == "review-sheet":
+            ontology_name = ""
+            if args.schema:
+                ontology_name = Ontology.load(args.schema).name
+            text = render_review_sheet(q.clusters(), ontology_name=ontology_name)
+            if args.output:
+                Path(args.output).write_text(text, encoding="utf-8")
+                print(f"wrote review sheet → {args.output}  "
+                      "(edit `status: APPROVED`, then: seocho ontology datahub-apply --terms this-file)")
+            else:
+                print(text)
             return 0
 
         if args.review_action == "export-spec":
@@ -380,11 +579,30 @@ def handle(args: argparse.Namespace) -> int:
     if args.ontology_command == "datahub-apply":
         from ..ontology import Ontology
         from ..datahub_export import datahub_glossary_to_mapping_spec
-        from ..ontology_ambiguity import apply_mapping_spec
+        from ..ontology_ambiguity import apply_mapping_spec, parse_review_sheet
 
         ontology = Ontology.load(args.schema)
-        with open(args.terms, "r", encoding="utf-8") as f:
-            term_records = json.load(f)
+        if args.gms:
+            # live pull: reviewed terms come straight from a running GMS. Known
+            # labels let the pull mark edits to existing classes as 'annotate'.
+            from ..connectors.datahub import fetch_glossary_term_records
+            from ..datahub_export import package_term_urn_prefix
+            term_records = fetch_glossary_term_records(
+                server=args.gms, known_labels=frozenset(ontology.nodes),
+                urn_prefix=package_term_urn_prefix(ontology.package_id or ontology.name))
+        elif args.terms:
+            raw = Path(args.terms).read_text(encoding="utf-8")
+            # Accept either raw term_records JSON (list) or an infra-free review
+            # sheet (YAML with a `terms:` list, seocho-v6w.8) — both normalize to
+            # the same term_records contract.
+            stripped = raw.lstrip()
+            if stripped.startswith("["):
+                term_records = json.loads(raw)
+            else:
+                term_records = parse_review_sheet(raw)
+        else:
+            print("datahub-apply: provide --terms <file> or --gms <url>")
+            return 2
         spec = datahub_glossary_to_mapping_spec(term_records, only_status=args.status, ontology_name=ontology.name)
         new_onto = apply_mapping_spec(ontology, spec)
         payload = new_onto.to_jsonld()
@@ -395,6 +613,31 @@ def handle(args: argparse.Namespace) -> int:
         else:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
+
+    if args.ontology_command == "datahub-queue":
+        from ..ontology import Ontology
+        from ..datahub_export import ambiguity_clusters_to_glossary_proposals, emit_to_datahub
+        from ..ontology_ambiguity import AmbiguityQuarantine
+
+        ontology = Ontology.load(args.schema)
+        package_id = ontology.package_id or ontology.name
+        clusters = AmbiguityQuarantine(args.quarantine).clusters()
+        mcps = ambiguity_clusters_to_glossary_proposals(clusters, package_id=package_id)
+        result = emit_to_datahub(mcps, gms_server=args.gms, token=args.token,
+                                 dry_run=not (args.emit and args.gms))
+        n_terms = sum(1 for m in mcps if m["entityType"] == "glossaryTerm")
+        if args.output:
+            Path(args.output).write_text(json.dumps(mcps, indent=2, ensure_ascii=False), encoding="utf-8")
+        if getattr(args, "output_json", False):
+            print(json.dumps({"proposed_terms": n_terms, "mode": result["mode"],
+                              "emitted": result["emitted"]}, indent=2, ensure_ascii=False))
+        else:
+            print(f"review queue: {n_terms} PROPOSED term(s) under '{package_id}.Proposed'  "
+                  f"mode={result['mode']} emitted={result['emitted']}"
+                  + ("  (add --gms URL --emit to publish to DataHub)" if not result["emitted"] else ""))
+        # Mirror the `ontology datahub` handler: a requested live emit that came
+        # back unavailable/failed must not exit 0 (silent-failure honesty).
+        return 0 if result.get("emitted") or result["mode"] == "dry_run" else 1
 
     if args.ontology_command == "select-guardrail":
         from ..ontology import Ontology
@@ -436,6 +679,34 @@ def handle(args: argparse.Namespace) -> int:
             for cat in sorted(report.by_category):
                 print(f"  {cat or '(uncategorized)'}: {report.by_category[cat]} "
                       f"(n={report.by_category_n.get(cat, 0)})")
+        return 0
+
+    if args.ontology_command == "learn":
+        from ..ontology import Ontology
+        from ..ontology.learning import learn_from_graph
+
+        ontology = Ontology.load(args.schema)
+        with Path(args.graph).open(encoding="utf-8") as handle:
+            graph = json.load(handle)
+        if not isinstance(graph, dict):
+            raise SeochoError("--graph must contain an extracted-graph JSON object")
+        report = learn_from_graph(graph, ontology, min_support=args.min_support)
+        payload = report.to_dict()
+        destination = Path(args.output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        result = {
+            "output": str(destination),
+            "promotion": payload["promotion"],
+            "counts": {key: len(payload[key]) for key in ("terms", "taxonomy", "relations", "axioms")},
+        }
+        print(
+            json.dumps(result, indent=2, ensure_ascii=False)
+            if getattr(args, "output_json", False)
+            else f"review-only candidate report written: {destination}"
+        )
         return 0
 
     if args.ontology_command == "import":

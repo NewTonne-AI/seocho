@@ -1,7 +1,26 @@
 # Decision Log
 
+## 2026-08-21
+
+- Accepted `ADR-0219-rust-dozer-projection-daemon.md`
+  - `seochod` owns the local Unix-socket and Rust Bolt boundary for approved,
+    workspace-scoped DozerDB LPG projections; Python retains ontology/policy and
+    read/query control-plane responsibilities.
+  - APOC Extended `parallel2` is read-side only in the tested DozerDB deployment
+    because its parallel workers reject canonical writes.
+
 This file is the lightweight index of architecture/product decisions.
 Each entry must link to a full ADR when impact is non-trivial.
+
+## 2026-08-15
+
+- [Accepted] `ADR-0223-root-compose-entry-point-and-docker-directory.md`
+  - keep one `compose.yaml` in the root and move overlays/side stacks to `docker/`
+  - absorb Compose's project-directory rule in the invocation, not in the
+    compose files: overlays follow the root file, side stacks pass
+    `--project-directory`
+  - move `.AGENTS.md`/`.PLANS.md` into `docs/maintainers/` so the root holds
+    only entry points, standard GitHub files, and tool configuration
 
 ## 2026-07-13
 
@@ -1386,3 +1405,42 @@ Use this block for new entries:
   agent for single-intent, Agent.as_tool over handoff, don't optimize the graph; faster
   model / self-hosted vLLM attacks the floor. Shareable chart artifact. Caveats: n=3, high
   variance, answer-quality is a separate axis (ADR-0214).
+
+- [Accepted] ADR-0220 arm-organ-medical-instrument (seocho-5ny) — pre-registered the
+  arm×organ A/B's pivot to GraphRAG-Bench medical after the erb procedural gold
+  produced a uniform null (wrong instrument): floor/ceiling controls mandatory
+  (closed-book floor 0.90 = memorized corpus, so organ effects are read from
+  deterministic mechanism metrics), six review-verified harness bugs fixed before
+  the run, governed-no-intern relabeled an index-time no-op control, and the clean
+  single-tenant run scoped as the task-parity control — load-bearing claims gated
+  on the adversarial probes.
+
+- [Accepted] ADR-0221 arm-organ-medical-results (seocho-5ny, seocho-e19, seocho-8qp,
+  seocho-zfe, seocho-svf) — measured results: read-time canonical resolution
+  quadruples answered questions (3→12/21; held-out replication 14/21 vs 7/21);
+  no-guardrail confabulates 5/21 vs governed 2/21; cross-tenant homonym probe shows
+  isolation is a MEANING boundary (no-workspace imports the other department's
+  referent into 2/3 answers, governed 0/3); mid-run ontology mutation collapses the
+  un-pinned arm (spurious rejections 1→4) while the pinned arm is immune; dual-index
+  3-tier shows no-identity-layer catastrophic fusion (degree-694 node) while a fair
+  name-keyed baseline matches canonical structure on a single-source corpus —
+  sharpening the intern claim to its three separately-evidenced parts.
+
+## 2026-08-17 (DataHub interchange: boundary, not internalization)
+
+- [Accepted] ADR-0222 DataHub = boundary serialization target (seocho-v6w)
+  - 12-agent review (6/6 adversarial verifications CONFIRMED): rejected
+    internalizing DataHub's entities/aspects/URN/entity-registry — aspect
+    decomposition destroys the whole-document fingerprint / SnapshotConflict /
+    cross-facet validate() invariants; corpuser violates user_id-not-in-graph;
+    Unity Catalog (HMS as foreign catalog) and all healthy DataHub integrations
+    are boundary adapters
+  - seam rule: `urn:li:*` + aspect names live only in datahub_export.py and
+    connectors/datahub.py; only normalized term_records / connector_record.v1
+    cross inward
+  - accepted internalizations: seocho-native URN scheme (portable intern-table
+    address, urn:li derived at the boundary) + audit fields on OntologySnapshot
+  - review signal = globalTags tag (advisory; SEOCHO never writes that aspect,
+    so re-export can't clobber approvals); pull → diff → human confirm →
+    snapshot save; infra-free review path stays first-class; docs say
+    "DataHub integration", never "DataHub-compatible"

@@ -759,16 +759,44 @@ class CypherBuilder:
         if relationship_type in self.ontology.relationships:
             tgt_clause = f":{quote_identifier(target_label)}" if target_label in self.ontology.nodes else ""
             arrow = ">" if self._path_direction([relationship_type]) else ""
+            # NT-543 (2026-09-21): this branch used to return only the neighbour's display name and
+            # labels. Neighbour types that carry their facts as properties and have no name
+            # (VerificationEvent, CreditObservation, Issuance, MethodologyVersion) therefore reached
+            # the answer model as bare identifiers and every such question ended in "no data" —
+            # declaring a new node type in the ontology made answers *worse*. Return one aggregated
+            # row (the shape the generic branch below already uses) with the neighbours' properties,
+            # and add the remaining one-hop neighbours in the same query so an answerable neighbour
+            # (a VVB behind VALIDATED_BY) is not lost just because the planner named a different edge.
+            rel_ref = quote_identifier(relationship_type)
+            display_m = self._display_expr("m", target_label)
+            hit = ("{relation: type(r), neighbor: " + display_m + ", target: " + display_m + ", "
+                   "neighbor_labels: labels(m), target_labels: labels(m), neighbor_properties: properties(m)}")
+            other = ("{relation: type(r2), neighbor: coalesce(m2.name, m2.uri), target: coalesce(m2.name, m2.uri), "
+                     "neighbor_labels: labels(m2), target_labels: labels(m2), neighbor_properties: properties(m2)}")
             return (
-                f"MATCH (n{label_clause})-[:{quote_identifier(relationship_type)}]-{arrow}(m{tgt_clause})\n"
+                f"MATCH (n{label_clause})\n"
                 f"WHERE {anchor_predicate}\n"
                 "  AND ($workspace_id = '' OR coalesce(n._workspace_id, '') = $workspace_id)\n"
                 f"  AND {active_graph_predicate('n')}\n"
-                f"  AND {active_graph_predicate('m')}\n"
-                f"RETURN DISTINCT {self._display_expr('m', target_label)} AS neighbor,\n"
-                "       labels(m) AS neighbor_labels\n"
-                "ORDER BY neighbor\n"
-                "LIMIT $limit",
+                f"OPTIONAL MATCH (n)-[r:{rel_ref}]-{arrow}(m{tgt_clause})\n"
+                f"WHERE {active_graph_predicate('m')}\n"
+                f"WITH n, [x IN collect(DISTINCT CASE WHEN m IS NULL THEN null ELSE {hit} END) WHERE x IS NOT NULL][0..$limit] AS hits,\n"
+                "     [x IN collect(DISTINCT elementId(m)) WHERE x IS NOT NULL] AS hit_ids\n"
+                # Always add the other one-hop neighbours (minus the ones already in `hits`): a question that names
+                # one edge usually also needs a neighbour behind another (the VVB behind VALIDATED_BY next to the
+                # verification events behind HAS_VERIFICATION). Same cap as `hits`, so the row stays bounded.
+                "OPTIONAL MATCH (n)-[r2]-(m2)\n"
+                "WHERE NOT elementId(m2) IN hit_ids\n"
+                "  AND ($workspace_id = '' OR coalesce(m2._workspace_id, '') = $workspace_id)\n"
+                f"  AND {active_graph_predicate('m2')}\n"
+                f"WITH n, hits, [x IN collect(DISTINCT CASE WHEN m2 IS NULL THEN null ELSE {other} END) WHERE x IS NOT NULL][0..$limit] AS others\n"
+                "RETURN coalesce(n.name, n.uri) AS entity,\n"
+                "       properties(n) AS properties,\n"
+                f"       '{rel_ref}' AS relation_type,\n"
+                "       hits AS neighbors,\n"
+                "       others AS other_neighbors,\n"
+                "       coalesce(n.content_preview, n.description, n.content, '') AS supporting_fact\n"
+                "LIMIT 1",
                 {**anchor_params, "workspace_id": workspace_id, "limit": limit},
             )
 
@@ -785,7 +813,10 @@ class CypherBuilder:
             "       collect(DISTINCT {\n"
             "         relation: type(r),\n"
             "         neighbor: coalesce(m.name, m.uri),\n"
-            "         neighbor_labels: labels(m)\n"
+            "         target: coalesce(m.name, m.uri),\n"
+            "         neighbor_labels: labels(m),\n"
+            "         target_labels: labels(m),\n"
+            "         neighbor_properties: properties(m)\n"
             "       })[0..$limit] AS neighbors,\n"
             "       coalesce(n.content_preview, n.description, n.content, '') AS supporting_fact\n"
             "LIMIT 1",

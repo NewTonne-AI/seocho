@@ -9,7 +9,7 @@ import pytest
 from seocho import NodeDef, Ontology, P, RelDef
 from seocho import e2e
 from seocho.models import AskResponse
-from seocho.run_spec import parse_run_spec
+from seocho.run_spec import RunSpecError, parse_run_spec
 
 
 class _DummyGraphStore:
@@ -45,6 +45,7 @@ def _write_fixture(tmp_path) -> Dict[str, Any]:
     return {
         "ontology": "schema.yaml",
         "documents": "docs",
+        "graph": "bolt://localhost:7687",
         "questions": ["Who is the CEO of Acme?"],
     }
 
@@ -107,6 +108,7 @@ def test_build_agent_config_inline_overrides() -> None:
         {
             "ontology": "schema.yaml",
             "documents": "docs",
+            "graph": "bolt://localhost:7687",
             "agent": {"execution_mode": "supervisor", "routing_policy": "thorough"},
             "query": {"reasoning_mode": False, "repair_budget": 7, "answer_style": "table"},
         }
@@ -120,12 +122,44 @@ def test_build_agent_config_inline_overrides() -> None:
     assert config.routing_policy is not None
 
 
+def test_run_spec_governance_mode_is_scoped_to_the_built_store(tmp_path, monkeypatch) -> None:
+    created = _patch_backends(monkeypatch)
+    payload = _write_fixture(tmp_path)
+    payload["governance"] = {"mode": "shadow"}
+    ctx = e2e.build(parse_run_spec(payload, source_path=str(tmp_path / "run.yaml")))
+    try:
+        assert ctx.spec.governance_mode == "shadow"
+        assert created["stores"][0]._governance_mode == "shadow"
+    finally:
+        ctx.close()
+
+
+def test_run_spec_rejects_an_unknown_projection_governance_mode() -> None:
+    with pytest.raises(RunSpecError, match="governance.mode"):
+        parse_run_spec(
+            {
+                "ontology": "schema.yaml", "documents": "docs", "graph": "bolt://localhost:7687",
+                "governance": {"mode": "maybe"},
+            }
+        )
+
+
+def test_run_spec_accepts_explicit_agents_sdk_ontology_context() -> None:
+    spec = parse_run_spec(
+        {
+            "ontology": "schema.yaml", "documents": "docs", "graph": "bolt://localhost:7687",
+            "agent": {"runtime": "agents_sdk", "ontology_bundle_dir": "bundle", "max_turns": 3},
+        }
+    )
+    assert e2e._agents_sdk_config(spec) == ("bundle", 3)
+
+
 def test_build_agent_config_strict_defaults_validation_to_reject() -> None:
-    base = {"ontology": {"path": "s.yaml", "enforcement": "strict"}, "documents": "docs"}
+    base = {"ontology": {"path": "s.yaml", "enforcement": "strict"}, "documents": "docs", "graph": "bolt://localhost:7687"}
     config = e2e.build_agent_config(parse_run_spec(base))
     assert config.validation_on_fail == "reject"
 
-    guided = {"ontology": {"path": "s.yaml", "enforcement": "guided"}, "documents": "docs"}
+    guided = {"ontology": {"path": "s.yaml", "enforcement": "guided"}, "documents": "docs", "graph": "bolt://localhost:7687"}
     assert e2e.build_agent_config(parse_run_spec(guided)).validation_on_fail == "warn"
 
 
@@ -146,6 +180,7 @@ def test_build_agent_config_from_design_with_inline_override(tmp_path) -> None:
         {
             "ontology": "schema.yaml",
             "documents": "docs",
+            "graph": "bolt://localhost:7687",
             "agent": {"design": "agent_design.yaml", "execution_mode": "pipeline"},
         },
         source_path=str(tmp_path / "run.yaml"),
@@ -369,15 +404,7 @@ def test_build_graph_store_respects_explicit_kind(monkeypatch) -> None:
         def __init__(self, uri: str, user: str, password: str) -> None:
             captured["neo4j"] = (uri, user, password)
 
-    class _FakeLadybug:
-        def __init__(self, path: str) -> None:
-            captured["ladybug"] = path
-
-        def ensure_constraints(self, ontology: Any) -> None:
-            pass
-
     monkeypatch.setattr(graph_mod, "Neo4jGraphStore", _FakeNeo4j)
-    monkeypatch.setattr(graph_mod, "LadybugGraphStore", _FakeLadybug)
 
     bolt_spec = parse_run_spec(
         {"ontology": "s.yaml", "documents": "d/",
@@ -386,13 +413,10 @@ def test_build_graph_store_respects_explicit_kind(monkeypatch) -> None:
     e2e._build_graph_store(bolt_spec, _ontology())
     assert captured["neo4j"] == ("bolt://h:7687", "u", "p")
 
-    embedded_spec = parse_run_spec({"ontology": "s.yaml", "documents": "d/"})
-    e2e._build_graph_store(embedded_spec, _ontology())
-    assert captured["ladybug"] == ".seocho/local.lbug"
 
 
 def test_build_vector_store_absent_section_returns_none() -> None:
-    spec = parse_run_spec({"ontology": "s.yaml", "documents": "d/"})
+    spec = parse_run_spec({"ontology": "s.yaml", "documents": "d/", "graph": "bolt://localhost:7687"})
     assert e2e._build_vector_store(spec) is None
 
 
@@ -414,7 +438,7 @@ def test_build_vector_store_fastembed_default(monkeypatch) -> None:
     monkeypatch.setattr(vec_mod, "create_vector_store", fake_create)
 
     spec = parse_run_spec(
-        {"ontology": "s.yaml", "documents": "d/", "vector": {"kind": "faiss"}}
+        {"ontology": "s.yaml", "documents": "d/", "graph": "bolt://localhost:7687", "vector": {"kind": "faiss"}}
     )
     assert e2e._build_vector_store(spec) == "VECTOR_STORE"
     assert captured["kind"] == "faiss"
@@ -427,7 +451,7 @@ def test_build_vector_store_fastembed_missing_is_loud(monkeypatch) -> None:
 
     monkeypatch.setattr(fe_mod, "make_fastembed_backend", lambda *a, **k: None)
     spec = parse_run_spec(
-        {"ontology": "s.yaml", "documents": "d/", "vector": {"kind": "faiss"}}
+        {"ontology": "s.yaml", "documents": "d/", "graph": "bolt://localhost:7687", "vector": {"kind": "faiss"}}
     )
     with pytest.raises(RuntimeError, match="fastembed is unavailable"):
         e2e._build_vector_store(spec)
